@@ -1,0 +1,24 @@
+name: sam-audio-conda-env
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pytorch
+  - torchvision
+  - torchaudio
+  - cudatoolkit=11.8
+  - pip
+  - pip:
+    - datasets
+    - transformers
+    - huggingface-hub
+    - wandb
+    - scikit-learn
+    - pandas
+    - numpy
+    - pyyaml
+    - peft
+    - librosa
+prefix: /Users/sarayu/miniconda3/envs/sam-audio-conda-env

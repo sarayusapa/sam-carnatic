@@ -1,0 +1,40 @@
+# Configuration file for SAM-Audio model training
+
+# Training parameters
+num_epochs: 10
+batch_size: 8
+learning_rate: 1e-4
+random_seed: 42
+weight_decay: 0.01
+lr_step_size: 10
+lr_gamma: 0.9
+
+# Data parameters
+mask_ratio: 0.15
+temperature: 0.07
+
+# Loss weights
+mask_weight: 0.5
+contrastive_weight: 0.3
+
+# Encoder parameters
+encoder_dims: [64, 128, 256, 512]
+kernel_size: 3
+stride: 2
+dropout_rate: 0.1
+
+# LoRA parameters
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.1
+
+# Logging and saving
+wandb_project: "sam-carnatic"
+run_name: "sam-audio-rg-experiment"
+best_model_path: "best_model.pth"
+final_model_path: "final_model.pth"
+
+# Model pushing
+push_to_hub: true
+model_name: "sarayusapa/sam-carnatic"
