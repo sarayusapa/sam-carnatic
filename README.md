@@ -1,108 +1,210 @@
 # SAM-Audio for Carnatic Raga Classification
 
-This repository contains a complete implementation of a SAM-Audio style model for Carnatic raga classification using the Hugging Face dataset "sarayusapa/carnatic-ragas".
+A SAM-Audio (Segment Anything Model for Audio) implementation for classifying Carnatic ragas from audio waveforms.
 
 ## Overview
 
-The SAM-Audio (Segment Anything Model for Audio) architecture adapts the concept of the Segment Anything Model (SAM) for visual tasks to audio processing. The model is designed for:
+The SAM-Audio architecture adapts the Segment Anything Model concept for audio processing:
 
-1. Learning meaningful temporal segments in audio signals
-2. Self-supervised learning through masked segment prediction
-3. Weakly-supervised learning for downstream classification tasks
-4. Efficient fine-tuning using LoRA (Low-Rank Adaptation)
+1. **Temporal Segmentation** - Learns meaningful segments in audio signals
+2. **Self-supervised Learning** - Masked segment prediction for representation learning
+3. **Contrastive Learning** - Segment-level embeddings that cluster by raga
+4. **Efficient Training** - Mixed precision, torch.compile, Flash Attention
 
-## Architecture Components
 
-### 1. Audio Encoder
-- CNN-based frontend similar to wav2vec2-style architectures
-- Multiple convolutional layers with batch normalization and ReLU activation
-- Extracts feature representations from raw audio waveforms
+## Installation
 
-### 2. Latent Segmentation Tokens
-- Learnable tokens that represent temporal segments in the audio
-- Multi-head attention mechanism between audio features and segmentation tokens
-- Captures local temporal patterns in the audio sequence
+### Option 1: Conda (Recommended)
 
-### 3. Masked Segment Prediction
-- Randomly masks portions of the input audio
-- Predicts masked segments based on unmasked context
-- Enables self-supervised learning of audio representations
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/sam-carnatic.git
+cd sam-carnatic
 
-### 4. Contrastive Segment Learning
-- Contrastive learning module for segment-level representations
-- Encourages similar segments within the same raga to be closer in embedding space
-- Uses a temperature parameter for controlling the similarity distribution
+# Create conda environment with CUDA 12.1 support
+conda env create -f environment.yml
 
-### 5. Classification Head
-- Lightweight classifier that takes segment-level representations
-- Averages segment representations for global context
-- Outputs probabilities for each raga class
+# Activate the environment
+conda activate sam-audio-conda-env
 
-### 6. LoRA Integration
-- Low-Rank Adaptation for efficient fine-tuning
-- Reduces the number of trainable parameters
-- Allows adaptation to new domains without full retraining
+# Verify CUDA is available
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"CPU\"}')"
+```
+
+### Option 2: pip with venv
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/sam-carnatic.git
+cd sam-carnatic
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install PyTorch with CUDA (adjust for your CUDA version)
+# For CUDA 12.1:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# For CUDA 11.8:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Install remaining dependencies
+pip install -r requirements.txt
+```
 
 ## Dataset
+The model uses the Hugging Face dataset `sarayusapa/carnatic-ragas`:
 
-The model uses the Hugging Face dataset "sarayusapa/carnatic-ragas" which contains:
-- Audio waveforms in the "audio" column
-- String labels representing ragas in the "raga" column
-- A reproducible 90/10 train-validation split with a fixed random seed
-
-## Training Process
-
-The training process combines:
-1. **Masked Segment Prediction Loss**: Reconstruction loss for masked segments
-2. **Contrastive Loss**: Encourages similar segments to be close in embedding space
-3. **Classification Loss**: Cross-entropy loss for raga classification
-
-The total loss is weighted combination:
+```python
+from datasets import load_dataset
+dataset = load_dataset("sarayusapa/carnatic-ragas")
+print(dataset)
 ```
-total_loss = classification_loss + mask_weight * masked_lm_loss + contrastive_weight * contrastive_loss
-```
+**Dataset Structure:**
+- `audio`: Audio waveform at 16kHz
+- `raga`: String label (one of 8 ragas)
 
-## Configuration
+**Ragas Included:**
+Melakarta Ragas: Kalyani, Kharaharapriya, Mayamalavagoulai, Todi, 
+Janya Ragas: Amritavarshini, Hamsanaadam, Varali, Sindhubhairavi
 
-The model is highly configurable through the `config.yaml` file:
+## Training
 
-## Usage
+### Quick Start
 
-### Environment Setup
-
-1. Create the conda environment:
-```bash
-conda env create -f environment.yml
-conda activate sam-audio-conda-env
-```
-
-2. Install additional requirements if needed:
-```bash
-pip install -r requirements.txt  # if requirements.txt file exists
-```
-
-### Training
-
-Run the training script:
 ```bash
 python train.py --config config.yaml
 ```
 
-Or customize training parameters:
+### Custom Training
+
 ```bash
-python train.py --batch-size 16 --epochs 100 --lr 0.001 --seed 42
+# Override specific parameters
+python train.py --config config.yaml --batch-size 64 --epochs 100 --lr 1e-4
+
+# Disable torch.compile (useful for debugging)
+python train.py --config config.yaml --no-compile
+
+# Set random seed for reproducibility
+python train.py --config config.yaml --seed 123
 ```
 
-### Logging
-metrics are logged to Weights & Biases.
+### Configuration Options
 
-## Model Architecture Diagram
+Edit `config.yaml` to customize training:
+
+```yaml
+# Training parameters
+num_epochs: 50
+batch_size: 32                    # Increase for more VRAM (64 for 24GB)
+learning_rate: 3e-4
+warmup_epochs: 2                  # LR warmup epochs
+patience: 10                      # Early stopping patience
+
+# Loss weights
+mask_weight: 0.5                  # Masked prediction loss weight
+contrastive_weight: 0.3           # Contrastive loss weight
+
+# Model architecture
+encoder_dims: [64, 128, 256, 512]
+num_segments: 64
+mask_ratio: 0.15
+
+
+### Monitoring Training
+
+Training metrics are logged to Weights & Biases:
 
 ```
-Input Audio -> Audio Encoder -> Feature Sequence -> Segmentation Module -> Segment Representations -> Classifier -> Raga Probabilities
-                    |                    |                    |                      |
-                    v                    v                    v                      v
-              Feature Maps        Attention Weights    Masked Prediction    Contrastive Learning
+
+Logged metrics:
+- `train_loss`, `train_accuracy`
+- `val_loss`, `val_accuracy`, `val_f1_score`
+- `learning_rate`
+
+## Model Architecture
+
+```
+Input Audio (5s @ 16kHz)
+        │
+        ▼
+┌───────────────────┐
+│   Audio Encoder   │  CNN layers: 64→128→256→512 channels
+│   (Conv1D + GELU) │  Stride 2, LayerNorm
+└───────────────────┘
+        │
+        ▼
+┌───────────────────┐
+│  Segment Tokens   │  64 learnable tokens
+│  + Attention      │  Flash Attention (SDPA)
+└───────────────────┘
+        │
+        ├──────────────────┬──────────────────┐
+        ▼                  ▼                  ▼
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│   Masked     │   │ Contrastive  │   │Classification│
+│  Prediction  │   │   Learning   │   │    Head      │
+└──────────────┘   └──────────────┘   └──────────────┘
+        │                  │                  │
+        ▼                  ▼                  ▼
+   MSE Loss          InfoNCE Loss      CrossEntropy
+        │                  │                  │
+        └──────────────────┴──────────────────┘
+                           │
+                           ▼
+                    Total Loss = CE + 0.5*MSE + 0.3*InfoNCE
 ```
 
-The model processes audio through the encoder to extract feature representations, then uses segmentation tokens to capture temporal patterns, with both masked prediction and contrastive learning objectives guiding the representation learning process.
+
+## Output Files
+
+After training:
+- `best_model.pth` - Best validation accuracy checkpoint
+- `final_model.pth` - Final epoch weights
+
+Checkpoint contents:
+```python
+{
+    'epoch': int,
+    'model_state_dict': dict,
+    'optimizer_state_dict': dict,
+    'scheduler_state_dict': dict,
+    'val_accuracy': float,
+    'config': dict
+}
+```
+
+## Inference
+
+```python
+import torch
+from train import SAMAudioModel, setup_cuda_optimizations
+
+# Setup device
+device, dtype = setup_cuda_optimizations()
+
+# Load model
+checkpoint = torch.load('best_model.pth')
+config = checkpoint['config']
+
+model = SAMAudioModel(
+    encoder_config={
+        'hidden_dims': config['encoder_dims'],
+        'kernel_size': config['kernel_size'],
+        'stride': config['stride'],
+        'dropout_rate': config['dropout_rate']
+    },
+    num_classes=8  # Number of ragas
+)
+model.load_state_dict(checkpoint['model_state_dict'])
+model.to(device)
+model.eval()
+
+# Inference
+with torch.no_grad(), torch.amp.autocast('cuda', dtype=dtype):
+    audio_tensor = ...  # Your audio tensor (batch, 80000)
+    outputs = model(audio_tensor.to(device))
+    predictions = outputs['raga_logits'].argmax(dim=-1)
+```
+

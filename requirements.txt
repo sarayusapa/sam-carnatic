@@ -1,13 +1,30 @@
-torch>=1.13.0
-torchaudio>=0.13.0
-datasets>=2.0.0
-transformers>=4.20.0
-huggingface-hub>=0.10.0
-wandb>=0.13.0
-scikit-learn>=1.0.0
-pandas>=1.3.0
-numpy>=1.21.0
+# Core PyTorch - requires 2.0+ for torch.compile and Flash Attention
+torch>=2.1.0
+torchaudio>=2.1.0
+
+# Hugging Face ecosystem
+datasets>=2.14.0
+transformers>=4.35.0
+huggingface-hub>=0.19.0
+
+# Experiment tracking
+wandb>=0.16.0
+
+# ML utilities
+scikit-learn>=1.3.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Audio processing
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# Config
 pyyaml>=6.0
-peft>=0.4.0
-librosa>=0.9.0
-accelerate>=0.12.0
+
+# Training acceleration
+accelerate>=0.25.0
+
+# Optional: for even faster attention (uncomment if needed)
+# flash-attn>=2.3.0  # Requires CUDA 11.8+ and manual install
+# triton>=2.1.0      # For torch.compile optimizations
