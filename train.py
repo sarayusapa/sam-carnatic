@@ -226,7 +226,14 @@ class SegmentTokenPredictor(nn.Module):
         mask_indices: Optional[List[torch.Tensor]] = None
     ):
         batch_size = audio_features.size(0)
+        seq_len = audio_features.size(1)
         segment_tokens = self.segment_tokens.unsqueeze(0).expand(batch_size, -1, -1)
+
+        # Generate mask indices if not provided and in training mode
+        if mask_indices is None and self.training and self.mask_ratio > 0:
+            num_masked = int(seq_len * self.mask_ratio)
+            mask_indices = [torch.randperm(seq_len, device=audio_features.device)[:num_masked]
+                          for _ in range(batch_size)]
 
         # Apply segment attention between audio features and segmentation tokens
         attended_features = self._attention(segment_tokens, audio_features, audio_features)
@@ -449,10 +456,11 @@ class AudioPreprocessor:
         return waveform
 
 
-def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 80000):
+def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 320000):
     """
-    Optimized collate function with pre-allocated tensors.
+    Optimized collate function with pre-allocated tensors and manual audio loading.
     """
+    import soundfile as sf
     batch_size = len(batch)
 
     # Pre-allocate tensors
@@ -460,28 +468,31 @@ def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 80
     labels = torch.zeros(batch_size, dtype=torch.long)
 
     for i, item in enumerate(batch):
-        audio = item['audio']['array']
-        if isinstance(audio, np.ndarray):
-            audio = torch.from_numpy(audio)
+        # Get pre-loaded audio array
+        audio = item['audio_array']
 
-        # Handle stereo
-        if audio.dim() > 1:
-            audio = audio[0]
+        # Convert to numpy array if it's a list
+        if isinstance(audio, list):
+            audio = np.array(audio)
+
+        if isinstance(audio, np.ndarray):
+            audio = torch.from_numpy(audio).float()
+
+        # Handle stereo (take first channel)
+        if audio.ndim > 1:
+            audio = audio[:, 0]
 
         # Truncate or copy
         length = min(audio.shape[0], max_length)
         waveforms[i, :length] = audio[:length].float()
         labels[i] = item['raga']
 
-    # Generate mask indices on GPU for speed
-    seq_len = max_length
-    num_masked = int(seq_len * mask_ratio)
-    mask_indices = [torch.randperm(seq_len)[:num_masked] for _ in range(batch_size)]
-
+    # Note: Mask indices will be generated after encoding based on actual feature length
+    # We'll pass mask_ratio instead and generate masks in the model
     return {
         'input_audio': waveforms,
         'labels': labels,
-        'masks': mask_indices
+        'masks': None  # Will be generated in model based on encoder output
     }
 
 
@@ -506,15 +517,15 @@ def train_epoch(
     all_preds = []
     all_labels = []
 
-    accumulation_steps = config.get('gradient_accumulation_steps', 1)
-    max_grad_norm = config.get('max_grad_norm', 1.0)
+    accumulation_steps = int(config.get('gradient_accumulation_steps', 1))
+    max_grad_norm = float(config.get('max_grad_norm', 1.0))
 
     optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
 
     for batch_idx, batch in enumerate(dataloader):
         input_audio = batch['input_audio'].to(device, non_blocking=True)
         labels = batch['labels'].to(device, non_blocking=True)
-        masks = [m.to(device, non_blocking=True) for m in batch['masks']]
+        masks = batch['masks']  # None, will be generated in model
 
         # Mixed precision forward pass
         with torch.amp.autocast(device_type='cuda', dtype=amp_dtype):
@@ -524,10 +535,10 @@ def train_epoch(
             loss = outputs['classification_loss'] or 0
 
             if outputs['masked_lm_loss'] is not None:
-                loss = loss + config.get('mask_weight', 0.5) * outputs['masked_lm_loss']
+                loss = loss + float(config.get('mask_weight', 0.5)) * outputs['masked_lm_loss']
 
             if outputs['contrastive_loss'] is not None:
-                loss = loss + config.get('contrastive_weight', 0.3) * outputs['contrastive_loss']
+                loss = loss + float(config.get('contrastive_weight', 0.3)) * outputs['contrastive_loss']
 
             loss = loss / accumulation_steps
 
@@ -584,7 +595,7 @@ def validate(
     for batch in dataloader:
         input_audio = batch['input_audio'].to(device, non_blocking=True)
         labels = batch['labels'].to(device, non_blocking=True)
-        masks = [m.to(device, non_blocking=True) for m in batch['masks']]
+        masks = batch['masks']  # None, will be generated in model
 
         with torch.amp.autocast(device_type='cuda', dtype=amp_dtype):
             outputs = model(
@@ -622,12 +633,16 @@ def main(config: Dict[str, Any]):
         name=config.get('run_name', 'sam-audio-rg')
     )
 
-    # Load dataset
+    # Load dataset using to_iterable_dataset to avoid eager audio decoding
     print("Loading dataset...")
-    dataset = load_dataset("sarayusapa/carnatic-ragas")
+    import soundfile as sf
+    from datasets import Features, Value
+
+    # Load dataset but cast audio column to avoid automatic decoding
+    dataset_raw = load_dataset("sarayusapa/carnatic-ragas")
 
     # Get unique ragas
-    unique_ragas = sorted(list(set(dataset['train']['raga'])))
+    unique_ragas = sorted(list(set(dataset_raw['train']['raga'])))
     num_classes = len(unique_ragas)
     print(f"Number of ragas: {num_classes}")
     print(f"Raga classes: {unique_ragas}")
@@ -635,16 +650,50 @@ def main(config: Dict[str, Any]):
     # Create mapping
     raga_to_id = {raga: idx for idx, raga in enumerate(unique_ragas)}
 
-    def add_raga_id(example):
-        example['raga'] = raga_to_id[example['raga']]
-        return example
+    # Extract data and decode audio manually using av or soundfile
+    def create_simple_dataset(ds):
+        """Convert to simple dict dataset with decoded audio arrays."""
+        import io
+        import soundfile as sf
 
-    dataset = dataset.map(add_raga_id)
+        data = []
+        arrow_table = ds.data.to_pandas()
+
+        for idx in range(len(arrow_table)):
+            row = arrow_table.iloc[idx]
+            # Access the audio dict structure from pandas
+            audio_info = row['audio']
+
+            # The audio is stored as bytes in the 'bytes' field
+            if 'bytes' in audio_info and audio_info['bytes'] is not None:
+                # Decode audio from bytes
+                audio_bytes = audio_info['bytes']
+                audio_array, sr = sf.read(io.BytesIO(audio_bytes))
+            elif 'array' in audio_info and audio_info['array'] is not None:
+                # Audio already decoded
+                audio_array = audio_info['array']
+                sr = audio_info['sampling_rate']
+            else:
+                print(f"Warning: No audio data found for index {idx}")
+                continue
+
+            data.append({
+                'audio_array': audio_array,
+                'raga': raga_to_id[row['raga']]
+            })
+        return data
+
+    print("Extracting audio paths...")
+    train_data = create_simple_dataset(dataset_raw['train'])
+
+    # Create simple dict dataset
+    from datasets import Dataset as HFDataset
+    full_dataset = HFDataset.from_list(train_data)
 
     # Split dataset
-    train_test_split = dataset['train'].train_test_split(
+    train_test_split = full_dataset.train_test_split(
         test_size=0.1,
-        seed=config.get('random_seed', 42)
+        seed=int(config.get('random_seed', 42))
     )
     train_dataset = train_test_split['train']
     val_dataset = train_test_split['test']
@@ -652,15 +701,21 @@ def main(config: Dict[str, Any]):
     print(f"Train samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
 
+    # Debug: Check audio data format
+    print(f"\nSample audio shapes:")
+    for i in range(min(3, len(train_dataset))):
+        audio_array = train_dataset[i]['audio_array']
+        print(f"  {i}: shape={audio_array.shape if hasattr(audio_array, 'shape') else len(audio_array)}")
+
     # Optimized data loaders for RTX 4090
-    num_workers = config.get('num_workers', 4)
-    batch_size = config.get('batch_size', 32)  # Higher batch size for 4090
+    num_workers = int(config.get('num_workers', 4))
+    batch_size = int(config.get('batch_size', 32))  # Higher batch size for 4090
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=partial(collate_fn, mask_ratio=config.get('mask_ratio', 0.15)),
+        collate_fn=partial(collate_fn, mask_ratio=float(config.get('mask_ratio', 0.15))),
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True if num_workers > 0 else False,
@@ -672,7 +727,7 @@ def main(config: Dict[str, Any]):
         val_dataset,
         batch_size=batch_size * 2,  # Larger batch for validation
         shuffle=False,
-        collate_fn=partial(collate_fn, mask_ratio=config.get('mask_ratio', 0.15)),
+        collate_fn=partial(collate_fn, mask_ratio=float(config.get('mask_ratio', 0.15))),
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True if num_workers > 0 else False
@@ -682,18 +737,18 @@ def main(config: Dict[str, Any]):
     encoder_config = {
         'input_dim': 1,
         'hidden_dims': config.get('encoder_dims', [64, 128, 256, 512]),
-        'kernel_size': config.get('kernel_size', 3),
-        'stride': config.get('stride', 2),
-        'dropout_rate': config.get('dropout_rate', 0.1),
+        'kernel_size': int(config.get('kernel_size', 3)),
+        'stride': int(config.get('stride', 2)),
+        'dropout_rate': float(config.get('dropout_rate', 0.1)),
         'use_layer_norm': config.get('use_layer_norm', True)
     }
 
     model = SAMAudioModel(
         encoder_config=encoder_config,
         num_classes=num_classes,
-        num_segments=config.get('num_segments', 64),
-        mask_ratio=config.get('mask_ratio', 0.15),
-        contrastive_temperature=config.get('temperature', 0.07)
+        num_segments=int(config.get('num_segments', 64)),
+        mask_ratio=float(config.get('mask_ratio', 0.15)),
+        contrastive_temperature=float(config.get('temperature', 0.07))
     ).to(device)
 
     # Compile model for faster execution (PyTorch 2.0+)
@@ -710,15 +765,15 @@ def main(config: Dict[str, Any]):
     # Initialize optimizer with fused AdamW (faster on CUDA)
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=config.get('learning_rate', 3e-4),
-        weight_decay=config.get('weight_decay', 0.01),
+        lr=float(config.get('learning_rate', 3e-4)),
+        weight_decay=float(config.get('weight_decay', 0.01)),
         betas=(0.9, 0.999),
         fused=True  # Fused implementation for CUDA
     )
 
     # Cosine annealing with warmup
-    num_epochs = config.get('num_epochs', 50)
-    warmup_epochs = config.get('warmup_epochs', 2)
+    num_epochs = int(config.get('num_epochs', 50))
+    warmup_epochs = int(config.get('warmup_epochs', 2))
 
     def lr_lambda(epoch):
         if epoch < warmup_epochs:
@@ -733,7 +788,7 @@ def main(config: Dict[str, Any]):
 
     # Training loop
     best_val_accuracy = 0.0
-    patience = config.get('patience', 10)
+    patience = int(config.get('patience', 10))
     patience_counter = 0
 
     for epoch in range(num_epochs):
