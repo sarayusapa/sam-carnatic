@@ -213,7 +213,7 @@ def process_video(args: tuple) -> List[Dict]:
                 return []
 
         print(f"  Chunking: {raga}...")
-        examples = chunk_audio(actual_path, raga)
+        examples = chunk_audio(actual_path, raga, overlap=0.5)
         print(f"  Created {len(examples)} chunks for {raga}")
 
         return examples

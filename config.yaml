@@ -2,20 +2,29 @@
 # Optimized for RTX 4090 (24GB VRAM)
 
 # Training parameters
-num_epochs: 50
+num_epochs: 30
 batch_size: 32                    # Increased for 4090's 24GB VRAM
 learning_rate: 3e-4               # Slightly higher LR works well with larger batches
 random_seed: 42
-weight_decay: 0.01
+weight_decay: 0.05                # Stronger regularization to reduce overfitting
 max_grad_norm: 1.0                # Gradient clipping for stability
 gradient_accumulation_steps: 1    # Increase if OOM (effective batch = batch_size * this)
 warmup_epochs: 2                  # Learning rate warmup
-patience: 10                      # Early stopping patience
+patience: 5                       # Early stopping patience
+
+# Pitch-shift augmentation: 3x dataset (original + up + down)
+# Each shifted copy gets a random magnitude in [1, range] semitones
+pitch_shift_range: 4              # Random shift up to ±4 semitones
 
 # Data parameters
 mask_ratio: 0.15
 temperature: 0.07
 num_segments: 64
+crop_length: 256000               # Random 16s crop from 20s chunks (temporal augmentation)
+
+# Mel-spectrogram frontend (better frequency decomposition than raw waveform)
+use_mel: true
+n_mels: 80
 
 # Loss weights
 mask_weight: 0.5
@@ -25,7 +34,7 @@ contrastive_weight: 0.3
 encoder_dims: [64, 128, 256, 512]
 kernel_size: 3
 stride: 2
-dropout_rate: 0.1
+dropout_rate: 0.25
 use_layer_norm: true              # More stable than BatchNorm for audio
 
 # RTX 4090 optimizations

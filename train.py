@@ -88,13 +88,9 @@ print(f"Using device: {device}")
 
 class AudioEncoder(nn.Module):
     """
-    Audio encoder using a CNN-based frontend similar to wav2vec2-style architectures.
-    Extracts feature representations from raw audio waveforms.
-
-    Optimized with:
-    - Kaiming initialization for better gradient flow
-    - GELU activation (smoother gradients)
-    - LayerNorm option for better training stability
+    Audio encoder with mel-spectrogram frontend + CNN backend.
+    Mel-spectrograms decompose frequency properly, giving the CNN
+    meaningful spectral structure instead of raw waveform oscillations.
     """
     def __init__(
         self,
@@ -103,13 +99,26 @@ class AudioEncoder(nn.Module):
         kernel_size: int = 3,
         stride: int = 2,
         dropout_rate: float = 0.1,
-        use_layer_norm: bool = True
+        use_layer_norm: bool = True,
+        use_mel: bool = True,
+        n_mels: int = 80,
+        sample_rate: int = 16000
     ):
         super().__init__()
 
-        layers = []
-        in_channels = input_dim
+        self.use_mel = use_mel
+        if use_mel:
+            self.mel_transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=sample_rate,
+                n_fft=1024,
+                hop_length=256,
+                n_mels=n_mels,
+            )
+            in_channels = n_mels
+        else:
+            in_channels = input_dim
 
+        layers = []
         for i, out_channels in enumerate(hidden_dims):
             layers.append(
                 nn.Conv1d(
@@ -119,19 +128,17 @@ class AudioEncoder(nn.Module):
                     padding=kernel_size // 2
                 )
             )
-            # LayerNorm is more stable than BatchNorm for audio
             if use_layer_norm:
-                layers.append(nn.GroupNorm(1, out_channels))  # GroupNorm(1) = LayerNorm
+                layers.append(nn.GroupNorm(1, out_channels))
             else:
                 layers.append(nn.BatchNorm1d(out_channels))
-            layers.append(nn.GELU())  # GELU often works better than ReLU
+            layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout_rate))
             in_channels = out_channels
 
         self.conv_layers = nn.Sequential(*layers)
         self.output_dim = hidden_dims[-1]
 
-        # Initialize weights
         self._init_weights()
 
     def _init_weights(self):
@@ -145,12 +152,16 @@ class AudioEncoder(nn.Module):
                 nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (batch, length) -> (batch, channels, length)
         if x.dim() == 2:
             x = x.unsqueeze(1)
 
+        if self.use_mel:
+            # (batch, 1, length) -> (batch, n_mels, time_frames)
+            x = self.mel_transform(x.squeeze(1))
+            x = torch.log(x + 1e-8)  # Log-mel is standard and more perceptually meaningful
+
         features = self.conv_layers(x)
-        return features.transpose(1, 2)  # (batch, length, channels)
+        return features.transpose(1, 2)  # (batch, time, channels)
 
 
 class SegmentTokenPredictor(nn.Module):
@@ -456,15 +467,42 @@ class AudioPreprocessor:
         return waveform
 
 
-def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 320000):
+def pitch_shift_waveform(waveform: torch.Tensor, shift_semitones: float, sample_rate: int = 16000) -> torch.Tensor:
     """
-    Optimized collate function with pre-allocated tensors and manual audio loading.
+    Pitch-shift a waveform by resampling (fast, no external deps).
+    Shift in semitones: positive = higher pitch, negative = lower.
+    """
+    if shift_semitones == 0:
+        return waveform
+    # Resample to simulate pitch shift: stretch then truncate/pad
+    rate = 2.0 ** (-shift_semitones / 12.0)
+    indices = torch.arange(0, waveform.shape[0] * rate, rate, device=waveform.device)
+    indices = indices.long().clamp(max=waveform.shape[0] - 1)
+    shifted = waveform[indices]
+    # Match original length
+    orig_len = waveform.shape[0]
+    if shifted.shape[0] > orig_len:
+        shifted = shifted[:orig_len]
+    elif shifted.shape[0] < orig_len:
+        shifted = F.pad(shifted, (0, orig_len - shifted.shape[0]))
+    return shifted
+
+
+def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 320000,
+               pitch_shift_range: int = 4, crop_length: int = 0, is_train: bool = True):
+    """
+    Collate function with pitch-shift and random time-crop augmentation.
+    Random crops give temporal diversity (like overlapping chunks but better —
+    every epoch sees different windows).
     """
     import soundfile as sf
     batch_size = len(batch)
 
+    # If cropping, use crop_length as the effective length
+    effective_length = crop_length if (is_train and crop_length > 0) else max_length
+
     # Pre-allocate tensors
-    waveforms = torch.zeros(batch_size, max_length, dtype=torch.float32)
+    waveforms = torch.zeros(batch_size, effective_length, dtype=torch.float32)
     labels = torch.zeros(batch_size, dtype=torch.long)
 
     for i, item in enumerate(batch):
@@ -482,17 +520,29 @@ def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 32
         if audio.ndim > 1:
             audio = audio[:, 0]
 
+        # Pitch-shift augmentation: each sample appears 3x in the dataset
+        # (original, shifted up, shifted down). shift_type stored per sample.
+        # Tanpura + vocals shift together, so the model learns raga relative to key.
+        shift_type = item.get('pitch_shift_type', 0)
+        if is_train and shift_type != 0:
+            magnitude = np.random.uniform(1, pitch_shift_range)
+            semitones = magnitude * shift_type  # +1 = up, -1 = down
+            audio = pitch_shift_waveform(audio, semitones)
+
+        # Random time-crop: pick a random window from the full chunk
+        if is_train and crop_length > 0 and audio.shape[0] > crop_length:
+            start = np.random.randint(0, audio.shape[0] - crop_length)
+            audio = audio[start:start + crop_length]
+
         # Truncate or copy
-        length = min(audio.shape[0], max_length)
+        length = min(audio.shape[0], effective_length)
         waveforms[i, :length] = audio[:length].float()
         labels[i] = item['raga']
 
-    # Note: Mask indices will be generated after encoding based on actual feature length
-    # We'll pass mask_ratio instead and generate masks in the model
     return {
         'input_audio': waveforms,
         'labels': labels,
-        'masks': None  # Will be generated in model based on encoder output
+        'masks': None
     }
 
 
@@ -569,8 +619,19 @@ def train_epoch(
 
         if batch_idx % 10 == 0:
             current_lr = optimizer.param_groups[0]['lr']
+            batch_loss = loss.item() * accumulation_steps
+            batch_acc = accuracy_score(
+                labels.cpu().numpy(), preds.cpu().numpy()
+            )
+            wandb.log({
+                'batch/train_loss': batch_loss,
+                'batch/train_acc': batch_acc,
+                'batch/lr': current_lr,
+                'batch/masked_lm_loss': outputs['masked_lm_loss'].item() if outputs['masked_lm_loss'] is not None else 0,
+                'batch/contrastive_loss': outputs['contrastive_loss'].item() if outputs['contrastive_loss'] is not None else 0,
+            })
             print(f'Epoch {epoch} [{batch_idx}/{len(dataloader)}] '
-                  f'Loss: {loss.item() * accumulation_steps:.4f} LR: {current_lr:.2e}')
+                  f'Loss: {batch_loss:.4f} Acc: {batch_acc:.4f} LR: {current_lr:.2e}')
 
     avg_loss = total_loss / len(dataloader)
     accuracy = accuracy_score(all_labels, all_preds)
@@ -686,6 +747,18 @@ def main(config: Dict[str, Any]):
     print("Extracting audio paths...")
     train_data = create_simple_dataset(dataset_raw['train'])
 
+    # Triple dataset: original + random up-shifted + random down-shifted
+    # Tanpura runs behind each clip, so shifting everything together simulates
+    # different performance keys — model must learn raga identity relative to tanpura
+    print("Tripling dataset with pitch-shift augmentation (original + up + down)...")
+    augmented_data = []
+    for item in train_data:
+        augmented_data.append({**item, 'pitch_shift_type': 0})   # original
+        augmented_data.append({**item, 'pitch_shift_type': 1})   # shift up [1, range]
+        augmented_data.append({**item, 'pitch_shift_type': -1})  # shift down [-range, -1]
+    train_data = augmented_data
+    print(f"Augmented train samples: {len(train_data)} (3x)")
+
     # Create simple dict dataset
     from datasets import Dataset as HFDataset
     full_dataset = HFDataset.from_list(train_data)
@@ -711,23 +784,29 @@ def main(config: Dict[str, Any]):
     num_workers = int(config.get('num_workers', 4))
     batch_size = int(config.get('batch_size', 32))  # Higher batch size for 4090
 
+    pitch_shift_range = int(config.get('pitch_shift_range', 4))
+    crop_length = int(config.get('crop_length', 0))  # 0 = no crop
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=partial(collate_fn, mask_ratio=float(config.get('mask_ratio', 0.15))),
+        collate_fn=partial(collate_fn, mask_ratio=float(config.get('mask_ratio', 0.15)),
+                           pitch_shift_range=pitch_shift_range,
+                           crop_length=crop_length, is_train=True),
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True if num_workers > 0 else False,
         prefetch_factor=2 if num_workers > 0 else None,
-        drop_last=True  # Better for batch norm / consistent batch sizes
+        drop_last=True
     )
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=batch_size * 2,  # Larger batch for validation
+        batch_size=batch_size * 2,
         shuffle=False,
-        collate_fn=partial(collate_fn, mask_ratio=float(config.get('mask_ratio', 0.15))),
+        collate_fn=partial(collate_fn, mask_ratio=float(config.get('mask_ratio', 0.15)),
+                           crop_length=crop_length, is_train=False),
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True if num_workers > 0 else False
@@ -740,7 +819,10 @@ def main(config: Dict[str, Any]):
         'kernel_size': int(config.get('kernel_size', 3)),
         'stride': int(config.get('stride', 2)),
         'dropout_rate': float(config.get('dropout_rate', 0.1)),
-        'use_layer_norm': config.get('use_layer_norm', True)
+        'use_layer_norm': config.get('use_layer_norm', True),
+        'use_mel': config.get('use_mel', True),
+        'n_mels': int(config.get('n_mels', 80)),
+        'sample_rate': 16000
     }
 
     model = SAMAudioModel(
@@ -891,23 +973,27 @@ if __name__ == '__main__':
     # Default config optimized for RTX 4090
     config = {
         'num_epochs': 50,
-        'batch_size': 32,  # Larger batch for 4090's 24GB VRAM
+        'batch_size': 32,
         'learning_rate': 3e-4,
         'random_seed': args.seed,
         'encoder_dims': [64, 128, 256, 512],
         'kernel_size': 3,
         'stride': 2,
-        'dropout_rate': 0.1,
+        'dropout_rate': 0.25,
         'use_layer_norm': True,
+        'use_mel': True,
+        'n_mels': 80,
         'mask_ratio': 0.15,
         'temperature': 0.07,
         'mask_weight': 0.5,
         'contrastive_weight': 0.3,
-        'weight_decay': 0.01,
+        'weight_decay': 0.05,
         'max_grad_norm': 1.0,
         'gradient_accumulation_steps': 1,
         'warmup_epochs': 2,
-        'patience': 10,
+        'patience': 5,
+        'pitch_shift_range': 4,
+        'crop_length': 256000,
         'num_workers': 4,
         'num_segments': 64,
         'compile_model': not args.no_compile,
