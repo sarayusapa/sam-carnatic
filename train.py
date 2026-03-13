@@ -828,17 +828,14 @@ def main(config: Dict[str, Any]):
     train_data = augmented_data
     print(f"Augmented train samples: {len(train_data)} (7x)")
 
-    # Create simple dict dataset
-    from datasets import Dataset as HFDataset
-    full_dataset = HFDataset.from_list(train_data)
-
-    # Split dataset
-    train_test_split = full_dataset.train_test_split(
-        test_size=0.1,
-        seed=int(config.get('random_seed', 42))
-    )
-    train_dataset = train_test_split['train']
-    val_dataset = train_test_split['test']
+    # Split dataset (plain list — avoids pyarrow 2GB int32 limit)
+    import random
+    rng = random.Random(int(config.get('random_seed', 42)))
+    indices = list(range(len(train_data)))
+    rng.shuffle(indices)
+    split = int(len(indices) * 0.9)
+    train_dataset = [train_data[i] for i in indices[:split]]
+    val_dataset = [train_data[i] for i in indices[split:]]
 
     print(f"Train samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
@@ -847,7 +844,7 @@ def main(config: Dict[str, Any]):
     print(f"\nSample audio shapes:")
     for i in range(min(3, len(train_dataset))):
         audio_array = train_dataset[i]['audio_array']
-        print(f"  {i}: shape={audio_array.shape if hasattr(audio_array, 'shape') else len(audio_array)}")
+        print(f"  {i}: shape={audio_array.shape if hasattr(audio_array, 'shape') else len(audio_array)}")  # type: ignore
 
     # Optimized data loaders for RTX 4090
     num_workers = int(config.get('num_workers', 4))
