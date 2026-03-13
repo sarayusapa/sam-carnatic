@@ -1,0 +1,33 @@
+    "Kalyani": [
+        "https://youtu.be/ZOoudH6olzM?si=dcekb3Ckm3YhvLe0", G#
+        "https://youtu.be/bqjJbvUe0EI?si=AEpSKPm1t34QtOm9", D
+    ],
+    "Kharaharapriya": [
+        "https://youtu.be/w1fJSK_LN68?si=0wTuXIwG1yzneh0m", G#
+        "https://youtu.be/zIOYBCBjgh8?si=GhbB6GYmDdEm68Sb", C#
+    ],
+    "Mayamalavagoulai": [
+        "https://youtu.be/CF7L0nlV4v8?si=o2uZc3OVpuEoPI5L", G#
+        "https://youtu.be/zGrDSEDeCI0?si=iUqi-2FCA1Ny8tBd", C#
+    ],
+    "Todi": [
+        "https://youtu.be/ORwF_WXFtL8?si=Ya59qKfW7P9TsmAz", G
+        "https://youtu.be/x1pbtvX89Bk?si=bsCayPE7_YnnhxOz", C#
+    ],
+    "Amritavarshini": [
+        "https://youtu.be/UtBIJPCX-ps?si=v-Um_x2oYJYEE7iQ", C# 
+        "https://youtu.be/s7RijjTfl5I?si=XzpzfiefcGXr7PoO", E
+    ],
+    "Hamsanaadam": [
+        "https://youtu.be/jNacNu-ar0E?si=cm8hFuk8SchY8ugs", G#
+        "https://youtu.be/FnSRfFdiDwY?si=vcw09xAdN_bR5sfu", E
+    ],
+    "Varali": [
+        "https://youtu.be/Lr02Fe93vcM?si=TZbYfJ2AjdlwXkt8", G#
+        "https://youtu.be/3M3-5E6xx2o?si=dhPjeTX6SjoOOnEx", D
+    ],
+    "Sindhubhairavi": [
+        "https://youtu.be/wFnshTKK_DI?si=UG-B1b_EkOcMKrxG", E
+        "https://youtu.be/x1aLwDLwn_M?si=dV4eTKKXCcLA6ugs", F
+        "https://youtu.be/H2Gj1ZY6tP0?si=Ub-uLpKQobtg59_Q", D
+    ],

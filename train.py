@@ -32,6 +32,7 @@ import argparse
 import yaml
 from typing import Optional, Dict, List, Any
 import math
+from math import log2
 from functools import partial
 import warnings
 
@@ -349,18 +350,46 @@ class RagaClassificationHead(nn.Module):
         return self.classifier(global_repr)
 
 
+class ShrutiDetectionHead(nn.Module):
+    """
+    Regression head for predicting Sa frequency (shruti) from audio.
+    Predicts in log-frequency space (semitones from C4) for stability.
+    """
+    TARGET_SA_HZ = 261.63  # C4 — arbitrary fixed reference for normalization
+
+    def __init__(self, hidden_size: int, dropout_rate: float = 0.1):
+        super().__init__()
+        self.regressor = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.GELU(),
+            nn.LayerNorm(hidden_size // 2),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size // 2, 1)
+        )
+
+    def forward(self, segment_representations: torch.Tensor) -> torch.Tensor:
+        global_repr = segment_representations.mean(dim=1)
+        return self.regressor(global_repr).squeeze(-1)  # (batch,) semitones from C4
+
+    @staticmethod
+    def hz_to_semitones(hz: torch.Tensor) -> torch.Tensor:
+        return 12.0 * torch.log2(hz / ShrutiDetectionHead.TARGET_SA_HZ)
+
+    @staticmethod
+    def semitones_to_hz(semitones: torch.Tensor) -> torch.Tensor:
+        return ShrutiDetectionHead.TARGET_SA_HZ * (2.0 ** (semitones / 12.0))
+
+
 class SAMAudioModel(nn.Module):
     """
-    Complete SAM-Audio model for Carnatic raga classification.
+    Dual-path SAM-Audio model for Carnatic raga classification.
 
-    Architecture:
-    - Audio encoder for feature extraction
-    - Latent segmentation tokens for temporal modeling
-    - Masked segment prediction for self-supervised learning
-    - Contrastive segment learning
-    - Classification head for raga prediction
+    Path 1 (Raga): Normalized audio (Sa shifted to fixed ref) → shared encoder → raga head
+    Path 2 (Shruti): Original audio (Sa varies) → shared encoder → shruti regression head
 
-    Supports torch.compile() for optimized inference/training.
+    Training: combined_loss = raga_loss + 0.3 * shruti_loss + auxiliary losses
+    Inference: detect Sa → normalize → classify raga
     """
 
     def __init__(
@@ -392,47 +421,59 @@ class SAMAudioModel(nn.Module):
             num_classes=num_classes
         )
 
-        # Store config
+        self.shruti_detector = ShrutiDetectionHead(
+            hidden_size=encoder_hidden_size
+        )
+
         self.num_classes = num_classes
         self.encoder_hidden_size = encoder_hidden_size
 
     def forward(
         self,
         input_audio: torch.Tensor,
+        input_audio_original: Optional[torch.Tensor] = None,
+        shruti_hz: Optional[torch.Tensor] = None,
         masks: Optional[List[torch.Tensor]] = None,
         labels: Optional[torch.Tensor] = None,
         return_contrastive_loss: bool = True
     ) -> Dict[str, Any]:
-        # Extract audio features
+        # === Path 1: Raga classification on normalized audio (Sa → fixed ref) ===
         audio_features = self.audio_encoder(input_audio)
-
-        # Get segment representations
         segment_reps, seg_predictions, seg_targets = self.segment_predictor(audio_features, masks)
 
-        # Compute masked segment prediction loss
         masked_lm_loss = None
         if seg_predictions is not None and seg_targets is not None:
             masked_lm_loss = F.mse_loss(seg_predictions, seg_targets)
 
-        # Compute contrastive loss
         contrastive_loss = None
         if return_contrastive_loss and self.training:
             contrastive_loss = self.contrastive_module(segment_reps)
 
-        # Get raga classification logits
         raga_logits = self.raga_classifier(segment_reps)
-
-        # Compute classification loss
         classification_loss = None
         if labels is not None:
             classification_loss = F.cross_entropy(raga_logits, labels, label_smoothing=0.1)
+
+        # === Path 2: Shruti detection on original (non-normalized) audio ===
+        shruti_loss = None
+        predicted_shruti_semitones = None
+        if input_audio_original is not None:
+            orig_features = self.audio_encoder(input_audio_original)
+            orig_segment_reps, _, _ = self.segment_predictor(orig_features)
+            predicted_shruti_semitones = self.shruti_detector(orig_segment_reps)
+
+            if shruti_hz is not None:
+                target_semitones = ShrutiDetectionHead.hz_to_semitones(shruti_hz)
+                shruti_loss = F.smooth_l1_loss(predicted_shruti_semitones, target_semitones)
 
         return {
             'segment_representations': segment_reps,
             'masked_lm_loss': masked_lm_loss,
             'contrastive_loss': contrastive_loss,
             'classification_loss': classification_loss,
-            'raga_logits': raga_logits
+            'shruti_loss': shruti_loss,
+            'raga_logits': raga_logits,
+            'predicted_shruti_semitones': predicted_shruti_semitones,
         }
 
 
@@ -488,59 +529,68 @@ def pitch_shift_waveform(waveform: torch.Tensor, shift_semitones: float, sample_
     return shifted
 
 
-def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 320000,
-               pitch_shift_range: int = 4, crop_length: int = 0, is_train: bool = True):
-    """
-    Collate function with pitch-shift and random time-crop augmentation.
-    Random crops give temporal diversity (like overlapping chunks but better —
-    every epoch sees different windows).
-    """
-    import soundfile as sf
-    batch_size = len(batch)
+TARGET_SA_HZ = 261.63  # Fixed reference for normalization
 
-    # If cropping, use crop_length as the effective length
+
+def collate_fn(batch: List[Dict], mask_ratio: float = 0.15, max_length: int = 320000,
+               crop_length: int = 0, is_train: bool = True):
+    """
+    Dual-path collate: produces normalized audio (for raga path) and
+    original audio (for shruti detection path).
+
+    Each sample has pitch_shift_semitones (fixed: -3..+3).
+    - Original audio = base audio pitch-shifted by that amount
+    - Shruti Hz shifts accordingly: base_shruti * 2^(shift/12)
+    - Normalized audio = original shifted so Sa → TARGET_SA_HZ
+    """
+    batch_size = len(batch)
     effective_length = crop_length if (is_train and crop_length > 0) else max_length
 
-    # Pre-allocate tensors
-    waveforms = torch.zeros(batch_size, effective_length, dtype=torch.float32)
+    waveforms_normalized = torch.zeros(batch_size, effective_length, dtype=torch.float32)
+    waveforms_original = torch.zeros(batch_size, effective_length, dtype=torch.float32)
+    shruti_hz_batch = torch.zeros(batch_size, dtype=torch.float32)
     labels = torch.zeros(batch_size, dtype=torch.long)
 
     for i, item in enumerate(batch):
-        # Get pre-loaded audio array
         audio = item['audio_array']
-
-        # Convert to numpy array if it's a list
         if isinstance(audio, list):
             audio = np.array(audio)
-
         if isinstance(audio, np.ndarray):
             audio = torch.from_numpy(audio).float()
-
-        # Handle stereo (take first channel)
         if audio.ndim > 1:
             audio = audio[:, 0]
 
-        # Pitch-shift augmentation: each sample appears 3x in the dataset
-        # (original, shifted up, shifted down). shift_type stored per sample.
-        # Tanpura + vocals shift together, so the model learns raga relative to key.
-        shift_type = item.get('pitch_shift_type', 0)
-        if is_train and shift_type != 0:
-            magnitude = np.random.uniform(1, pitch_shift_range)
-            semitones = magnitude * shift_type  # +1 = up, -1 = down
-            audio = pitch_shift_waveform(audio, semitones)
+        base_shruti = float(item['shruti_hz'])
+        shift_semitones = float(item.get('pitch_shift_semitones', 0))
 
-        # Random time-crop: pick a random window from the full chunk
+        # Apply pitch-shift augmentation → this is the "original" audio
+        # (simulates a performance in a different shruti)
+        if shift_semitones != 0:
+            audio = pitch_shift_waveform(audio, shift_semitones)
+
+        shifted_shruti = base_shruti * (2.0 ** (shift_semitones / 12.0))
+
+        # Random time-crop
         if is_train and crop_length > 0 and audio.shape[0] > crop_length:
             start = np.random.randint(0, audio.shape[0] - crop_length)
             audio = audio[start:start + crop_length]
 
-        # Truncate or copy
+        # Original audio (Sa at shifted_shruti Hz) → for shruti detection path
         length = min(audio.shape[0], effective_length)
-        waveforms[i, :length] = audio[:length].float()
+        waveforms_original[i, :length] = audio[:length]
+
+        # Normalized audio: shift Sa from shifted_shruti → TARGET_SA_HZ
+        normalize_semitones = 12.0 * math.log2(TARGET_SA_HZ / shifted_shruti)
+        audio_normalized = pitch_shift_waveform(audio, normalize_semitones)
+        waveforms_normalized[i, :length] = audio_normalized[:length]
+
+        shruti_hz_batch[i] = shifted_shruti
         labels[i] = item['raga']
 
     return {
-        'input_audio': waveforms,
+        'input_audio': waveforms_normalized,
+        'input_audio_original': waveforms_original,
+        'shruti_hz': shruti_hz_batch,
         'labels': labels,
         'masks': None
     }
@@ -572,14 +622,24 @@ def train_epoch(
 
     optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
 
+    shruti_loss_weight = float(config.get('shruti_loss_weight', 0.3))
+
     for batch_idx, batch in enumerate(dataloader):
         input_audio = batch['input_audio'].to(device, non_blocking=True)
+        input_audio_original = batch['input_audio_original'].to(device, non_blocking=True)
+        shruti_hz = batch['shruti_hz'].to(device, non_blocking=True)
         labels = batch['labels'].to(device, non_blocking=True)
-        masks = batch['masks']  # None, will be generated in model
+        masks = batch['masks']
 
         # Mixed precision forward pass
         with torch.amp.autocast(device_type='cuda', dtype=amp_dtype):
-            outputs = model(input_audio=input_audio, masks=masks, labels=labels)
+            outputs = model(
+                input_audio=input_audio,
+                input_audio_original=input_audio_original,
+                shruti_hz=shruti_hz,
+                masks=masks,
+                labels=labels
+            )
 
             # Combine losses
             loss = outputs['classification_loss'] or 0
@@ -590,22 +650,21 @@ def train_epoch(
             if outputs['contrastive_loss'] is not None:
                 loss = loss + float(config.get('contrastive_weight', 0.3)) * outputs['contrastive_loss']
 
+            if outputs['shruti_loss'] is not None:
+                loss = loss + shruti_loss_weight * outputs['shruti_loss']
+
             loss = loss / accumulation_steps
 
         # Scaled backward pass
         scaler.scale(loss).backward()
 
         if (batch_idx + 1) % accumulation_steps == 0:
-            # Gradient clipping
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-
-            # Optimizer step with scaling
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
 
-            # Step scheduler if per-batch
             if scheduler is not None and config.get('scheduler_per_batch', False):
                 scheduler.step()
 
@@ -629,6 +688,7 @@ def train_epoch(
                 'batch/lr': current_lr,
                 'batch/masked_lm_loss': outputs['masked_lm_loss'].item() if outputs['masked_lm_loss'] is not None else 0,
                 'batch/contrastive_loss': outputs['contrastive_loss'].item() if outputs['contrastive_loss'] is not None else 0,
+                'batch/shruti_loss': outputs['shruti_loss'].item() if outputs['shruti_loss'] is not None else 0,
             })
             print(f'Epoch {epoch} [{batch_idx}/{len(dataloader)}] '
                   f'Loss: {batch_loss:.4f} Acc: {batch_acc:.4f} LR: {current_lr:.2e}')
@@ -653,22 +713,30 @@ def validate(
     all_preds = []
     all_labels = []
 
+    shruti_loss_weight = float(config.get('shruti_loss_weight', 0.3))
+
     for batch in dataloader:
         input_audio = batch['input_audio'].to(device, non_blocking=True)
+        input_audio_original = batch['input_audio_original'].to(device, non_blocking=True)
+        shruti_hz = batch['shruti_hz'].to(device, non_blocking=True)
         labels = batch['labels'].to(device, non_blocking=True)
-        masks = batch['masks']  # None, will be generated in model
+        masks = batch['masks']
 
         with torch.amp.autocast(device_type='cuda', dtype=amp_dtype):
             outputs = model(
                 input_audio=input_audio,
+                input_audio_original=input_audio_original,
+                shruti_hz=shruti_hz,
                 masks=masks,
                 labels=labels,
-                return_contrastive_loss=False  # Skip for validation
+                return_contrastive_loss=False
             )
 
             loss = outputs['classification_loss'] or 0
             if outputs['masked_lm_loss'] is not None:
                 loss = loss + config.get('mask_weight', 0.5) * outputs['masked_lm_loss']
+            if outputs['shruti_loss'] is not None:
+                loss = loss + shruti_loss_weight * outputs['shruti_loss']
 
         total_loss += loss.item()
 
@@ -740,24 +808,25 @@ def main(config: Dict[str, Any]):
 
             data.append({
                 'audio_array': audio_array,
-                'raga': raga_to_id[row['raga']]
+                'raga': raga_to_id[row['raga']],
+                'shruti_hz': float(row['shruti_hz']),
             })
         return data
 
     print("Extracting audio paths...")
     train_data = create_simple_dataset(dataset_raw['train'])
 
-    # Triple dataset: original + random up-shifted + random down-shifted
-    # Tanpura runs behind each clip, so shifting everything together simulates
-    # different performance keys — model must learn raga identity relative to tanpura
-    print("Tripling dataset with pitch-shift augmentation (original + up + down)...")
+    # 7x dataset: original + +-1, +-2, +-3 semitone shifts
+    # Tanpura + vocals shift together, simulating different performance keys.
+    # Shruti Hz shifts accordingly so the shruti detection head learns correctly.
+    pitch_shifts = [-3, -2, -1, 0, 1, 2, 3]
+    print(f"Creating 7x augmented dataset with pitch shifts {pitch_shifts}...")
     augmented_data = []
     for item in train_data:
-        augmented_data.append({**item, 'pitch_shift_type': 0})   # original
-        augmented_data.append({**item, 'pitch_shift_type': 1})   # shift up [1, range]
-        augmented_data.append({**item, 'pitch_shift_type': -1})  # shift down [-range, -1]
+        for shift in pitch_shifts:
+            augmented_data.append({**item, 'pitch_shift_semitones': shift})
     train_data = augmented_data
-    print(f"Augmented train samples: {len(train_data)} (3x)")
+    print(f"Augmented train samples: {len(train_data)} (7x)")
 
     # Create simple dict dataset
     from datasets import Dataset as HFDataset
@@ -784,7 +853,6 @@ def main(config: Dict[str, Any]):
     num_workers = int(config.get('num_workers', 4))
     batch_size = int(config.get('batch_size', 32))  # Higher batch size for 4090
 
-    pitch_shift_range = int(config.get('pitch_shift_range', 4))
     crop_length = int(config.get('crop_length', 0))  # 0 = no crop
 
     train_loader = torch.utils.data.DataLoader(
@@ -792,7 +860,6 @@ def main(config: Dict[str, Any]):
         batch_size=batch_size,
         shuffle=True,
         collate_fn=partial(collate_fn, mask_ratio=float(config.get('mask_ratio', 0.15)),
-                           pitch_shift_range=pitch_shift_range,
                            crop_length=crop_length, is_train=True),
         num_workers=num_workers,
         pin_memory=True,
@@ -897,7 +964,7 @@ def main(config: Dict[str, Any]):
             'val_loss': val_loss,
             'val_accuracy': val_acc,
             'val_f1_score': val_f1,
-            'learning_rate': optimizer.param_groups[0]['lr']
+            'learning_rate': optimizer.param_groups[0]['lr'],
         })
 
         print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}')
@@ -992,7 +1059,7 @@ if __name__ == '__main__':
         'gradient_accumulation_steps': 1,
         'warmup_epochs': 2,
         'patience': 5,
-        'pitch_shift_range': 4,
+        'shruti_loss_weight': 0.3,
         'crop_length': 256000,
         'num_workers': 4,
         'num_segments': 64,

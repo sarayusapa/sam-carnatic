@@ -12,9 +12,8 @@ gradient_accumulation_steps: 1    # Increase if OOM (effective batch = batch_siz
 warmup_epochs: 2                  # Learning rate warmup
 patience: 5                       # Early stopping patience
 
-# Pitch-shift augmentation: 3x dataset (original + up + down)
-# Each shifted copy gets a random magnitude in [1, range] semitones
-pitch_shift_range: 4              # Random shift up to ±4 semitones
+# Pitch-shift augmentation: 7x dataset (original + ±1, ±2, ±3 semitones)
+# Fixed shifts give more variety than random; shruti_hz shifts accordingly
 
 # Data parameters
 mask_ratio: 0.15
@@ -29,6 +28,7 @@ n_mels: 80
 # Loss weights
 mask_weight: 0.5
 contrastive_weight: 0.3
+shruti_loss_weight: 0.3            # Weight for shruti detection auxiliary loss
 
 # Encoder parameters
 encoder_dims: [64, 128, 256, 512]

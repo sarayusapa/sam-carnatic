@@ -28,40 +28,59 @@ from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# Dataset configuration
+# Note name to frequency mapping (Hz, octave 4)
+NOTE_TO_FREQ = {
+    "C":  261.63,
+    "C#": 277.18,
+    "D":  293.66,
+    "D#": 311.13,
+    "E":  329.63,
+    "F":  349.23,
+    "F#": 369.99,
+    "G":  392.00,
+    "G#": 415.30,
+    "A":  440.00,
+    "A#": 466.16,
+    "B":  493.88,
+}
+
+# Target Sa frequency for normalization
+TARGET_SA_HZ = 261.63
+
+# Dataset configuration: (url, shruti_note)
 RAGA_VIDEOS = {
     "Kalyani": [
-        "https://youtu.be/ZOoudH6olzM?si=dcekb3Ckm3YhvLe0",
-        "https://youtu.be/bqjJbvUe0EI?si=AEpSKPm1t34QtOm9",
+        ("https://youtu.be/ZOoudH6olzM?si=dcekb3Ckm3YhvLe0", "G#"),
+        ("https://youtu.be/bqjJbvUe0EI?si=AEpSKPm1t34QtOm9", "D"),
     ],
     "Kharaharapriya": [
-        "https://youtu.be/w1fJSK_LN68?si=0wTuXIwG1yzneh0m",
-        "https://youtu.be/zIOYBCBjgh8?si=GhbB6GYmDdEm68Sb",
+        ("https://youtu.be/w1fJSK_LN68?si=0wTuXIwG1yzneh0m", "G#"),
+        ("https://youtu.be/zIOYBCBjgh8?si=GhbB6GYmDdEm68Sb", "C#"),
     ],
     "Mayamalavagoulai": [
-        "https://youtu.be/CF7L0nlV4v8?si=o2uZc3OVpuEoPI5L",
-        "https://youtu.be/zGrDSEDeCI0?si=iUqi-2FCA1Ny8tBd",
+        ("https://youtu.be/CF7L0nlV4v8?si=o2uZc3OVpuEoPI5L", "G#"),
+        ("https://youtu.be/zGrDSEDeCI0?si=iUqi-2FCA1Ny8tBd", "C#"),
     ],
     "Todi": [
-        "https://youtu.be/ORwF_WXFtL8?si=Ya59qKfW7P9TsmAz",
-        "https://youtu.be/x1pbtvX89Bk?si=bsCayPE7_YnnhxOz",
+        ("https://youtu.be/ORwF_WXFtL8?si=Ya59qKfW7P9TsmAz", "G"),
+        ("https://youtu.be/x1pbtvX89Bk?si=bsCayPE7_YnnhxOz", "C#"),
     ],
     "Amritavarshini": [
-        "https://youtu.be/UtBIJPCX-ps?si=v-Um_x2oYJYEE7iQ",
-        "https://youtu.be/s7RijjTfl5I?si=XzpzfiefcGXr7PoO",
+        ("https://youtu.be/UtBIJPCX-ps?si=v-Um_x2oYJYEE7iQ", "C#"),
+        ("https://youtu.be/s7RijjTfl5I?si=XzpzfiefcGXr7PoO", "E"),
     ],
     "Hamsanaadam": [
-        "https://youtu.be/jNacNu-ar0E?si=cm8hFuk8SchY8ugs",
-        "https://youtu.be/FnSRfFdiDwY?si=vcw09xAdN_bR5sfu",
+        ("https://youtu.be/jNacNu-ar0E?si=cm8hFuk8SchY8ugs", "G#"),
+        ("https://youtu.be/FnSRfFdiDwY?si=vcw09xAdN_bR5sfu", "E"),
     ],
     "Varali": [
-        "https://youtu.be/Lr02Fe93vcM?si=TZbYfJ2AjdlwXkt8",
-        "https://youtu.be/WknDE3b7Jjo?si=L1yyoHnXp1Hn0KNV",
+        ("https://youtu.be/Lr02Fe93vcM?si=TZbYfJ2AjdlwXkt8", "G#"),
+        ("https://youtu.be/3M3-5E6xx2o?si=dhPjeTX6SjoOOnEx", "D"),
     ],
     "Sindhubhairavi": [
-        "https://youtu.be/wFnshTKK_DI?si=UG-B1b_EkOcMKrxG",
-        "https://youtu.be/x1aLwDLwn_M?si=dV4eTKKXCcLA6ugs",
-        "https://youtu.be/H2Gj1ZY6tP0?si=Ub-uLpKQobtg59_Q",
+        ("https://youtu.be/wFnshTKK_DI?si=UG-B1b_EkOcMKrxG", "E"),
+        ("https://youtu.be/x1aLwDLwn_M?si=dV4eTKKXCcLA6ugs", "F"),
+        ("https://youtu.be/H2Gj1ZY6tP0?si=Ub-uLpKQobtg59_Q", "D"),
     ],
 }
 
@@ -126,6 +145,7 @@ def download_audio(youtube_url: str, output_path: Path, retries: int = MAX_RETRI
 def chunk_audio(
     wav_path: Path,
     raga: str,
+    shruti_hz: float,
     chunk_duration: int = CHUNK_DURATION,
     sample_rate: int = SAMPLE_RATE,
     overlap: float = 0.0
@@ -136,12 +156,13 @@ def chunk_audio(
     Args:
         wav_path: Path to the WAV file
         raga: Raga label for the audio
+        shruti_hz: Sa frequency in Hz for this video
         chunk_duration: Duration of each chunk in seconds
         sample_rate: Target sample rate
         overlap: Overlap ratio between chunks (0.0 to 0.5)
 
     Returns:
-        List of dictionaries with audio paths and labels
+        List of dictionaries with audio paths, labels, and shruti frequency
     """
     try:
         y, sr = librosa.load(wav_path, sr=sample_rate, mono=True)
@@ -161,7 +182,7 @@ def chunk_audio(
         if np.abs(chunk).max() < 0.01:
             continue
 
-        # Normalize chunk
+        # Normalize amplitude (not pitch)
         chunk = chunk / (np.abs(chunk).max() + 1e-8)
 
         chunk_id = uuid.uuid4().hex[:12]
@@ -171,7 +192,8 @@ def chunk_audio(
 
         examples.append({
             "audio": str(chunk_path),
-            "raga": raga
+            "raga": raga,
+            "shruti_hz": shruti_hz,
         })
 
     return examples
@@ -182,17 +204,18 @@ def process_video(args: tuple) -> List[Dict]:
     Process a single video: download and chunk.
 
     Args:
-        args: Tuple of (raga, url)
+        args: Tuple of (raga, url, shruti_note)
 
     Returns:
         List of processed examples
     """
-    raga, url = args
+    raga, url, shruti_note = args
+    shruti_hz = NOTE_TO_FREQ[shruti_note]
     video_id = uuid.uuid4().hex[:8]
     wav_path = WORKDIR / f"temp_{video_id}.wav"
 
     try:
-        print(f"  Downloading: {raga} - {url[:50]}...")
+        print(f"  Downloading: {raga} ({shruti_note}={shruti_hz:.1f}Hz) - {url[:50]}...")
         if not download_audio(url, wav_path):
             print(f"  Failed to download {url}")
             return []
@@ -213,7 +236,7 @@ def process_video(args: tuple) -> List[Dict]:
                 return []
 
         print(f"  Chunking: {raga}...")
-        examples = chunk_audio(actual_path, raga, overlap=0.5)
+        examples = chunk_audio(actual_path, raga, shruti_hz, overlap=0.5)
         print(f"  Created {len(examples)} chunks for {raga}")
 
         return examples
@@ -247,9 +270,9 @@ def build_dataset(
 
     # Prepare all video tasks
     tasks = []
-    for raga, urls in RAGA_VIDEOS.items():
-        for url in urls:
-            tasks.append((raga, url))
+    for raga, videos in RAGA_VIDEOS.items():
+        for url, shruti_note in videos:
+            tasks.append((raga, url, shruti_note))
 
     print(f"Processing {len(tasks)} videos across {len(RAGA_VIDEOS)} ragas...")
 
