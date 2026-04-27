@@ -1,0 +1,79 @@
+# ── Data & audio ──────────────────────────────────────────────────────────────
+data/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aac
+*.m4a
+*.opus
+*.aiff
+*.aif
+*.wma
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+
+# ── Model weights & checkpoints ───────────────────────────────────────────────
+*.safetensors
+*.pth
+*.pt
+*.bin
+*.ckpt
+*.h5
+*.hdf5
+*.onnx
+*.tflite
+*.pb
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# ── HuggingFace / model caches ────────────────────────────────────────────────
+.cache/
+**/.cache/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+ENV/
+**/venv/
+**/.venv/
+
+# ── Environment variable files ────────────────────────────────────────────────
+.env
+.env.*
+*.env
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Logs & experiment outputs ─────────────────────────────────────────────────
+*.log
+*.tmp
+*.temp
+wandb/
+runs/
+lightning_logs/
+outputs/
+
+# ── Inference samples (audio output) ──────────────────────────────────────────
+inference/samples/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes

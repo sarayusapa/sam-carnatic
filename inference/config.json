@@ -1,0 +1,44 @@
+{
+  "model_type": "sam-audio",
+  "architectures": [
+    "SAMAudioModel"
+  ],
+  "num_classes": 8,
+  "id2label": {
+    "0": "Amritavarshini",
+    "1": "Hamsanaadam",
+    "2": "Kalyani",
+    "3": "Kharaharapriya",
+    "4": "Mayamalavagoulai",
+    "5": "Sindhubhairavi",
+    "6": "Todi",
+    "7": "Varali"
+  },
+  "label2id": {
+    "Amritavarshini": 0,
+    "Hamsanaadam": 1,
+    "Kalyani": 2,
+    "Kharaharapriya": 3,
+    "Mayamalavagoulai": 4,
+    "Sindhubhairavi": 5,
+    "Todi": 6,
+    "Varali": 7
+  },
+  "encoder": {
+    "input_dim": 1,
+    "hidden_dims": [64, 128, 256, 512],
+    "kernel_size": 3,
+    "stride": 2,
+    "dropout_rate": 0.25,
+    "use_layer_norm": true,
+    "use_mel": true,
+    "n_mels": 80,
+    "sample_rate": 16000
+  },
+  "num_segments": 64,
+  "mask_ratio": 0.0,
+  "contrastive_temperature": 0.07,
+  "hidden_size": 512,
+  "best_val_accuracy": 0.9961977186311787,
+  "best_epoch": 17
+}

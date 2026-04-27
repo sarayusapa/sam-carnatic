@@ -1,33 +1,57 @@
     "Kalyani": [
         "https://youtu.be/ZOoudH6olzM?si=dcekb3Ckm3YhvLe0", G#
         "https://youtu.be/bqjJbvUe0EI?si=AEpSKPm1t34QtOm9", D
+        "https://www.youtube.com/watch?v=fNm1jKz6Fmg", D
+        "https://youtu.be/Ol51u5A6yK4?si=RPChC74G2d_kwVTb", G
+        "https://www.youtube.com/watch?v=DCW2zMoSLxc", C#
     ],
     "Kharaharapriya": [
         "https://youtu.be/w1fJSK_LN68?si=0wTuXIwG1yzneh0m", G#
         "https://youtu.be/zIOYBCBjgh8?si=GhbB6GYmDdEm68Sb", C#
+        "https://youtu.be/GC0plaWBGVE?si=9xHIvWaqG2CGQjh4", G
+        "https://youtu.be/yeMTHIbBAVM?si=UMFVhHqoF2wTrhZp", C#
+        "https://youtu.be/ttM8PZFUYn0?si=bvshjXAjwb6Jjbtp", D#
     ],
     "Mayamalavagoulai": [
         "https://youtu.be/CF7L0nlV4v8?si=o2uZc3OVpuEoPI5L", G#
         "https://youtu.be/zGrDSEDeCI0?si=iUqi-2FCA1Ny8tBd", C#
+        "https://youtu.be/L_u71q2H0io?si=EY8H8RDD-xQEH6Lo", D
+        "https://youtu.be/NKLCxhJLuDQ?si=Rw_euSQqQPh1nOFQ", D
+        "https://youtu.be/T0X2rxUZ11g?si=AkOQhMZoTbeKuGm7", G#
+        "https://youtu.be/MPZTqELOd58?si=PCayQNM12RjDSLJH", C
     ],
     "Todi": [
         "https://youtu.be/ORwF_WXFtL8?si=Ya59qKfW7P9TsmAz", G
         "https://youtu.be/x1pbtvX89Bk?si=bsCayPE7_YnnhxOz", C#
+        "https://youtu.be/GCqeicEenms?si=2eT1y_diFmy1VOgg", C#
+        "https://youtu.be/qgehU_o-HuI?si=DwMqnWQTNozTyp59", G#
+        "https://youtu.be/kQAPFTL_4FA?si=5-FEtuZC5-kEsBMW", D
+        "https://youtu.be/ENZo9oY0ivM?si=JBl9gxcfZMSeEo8i", G#
     ],
     "Amritavarshini": [
         "https://youtu.be/UtBIJPCX-ps?si=v-Um_x2oYJYEE7iQ", C# 
         "https://youtu.be/s7RijjTfl5I?si=XzpzfiefcGXr7PoO", E
+        "https://youtu.be/xg3tN-TVkQI?si=qhMFMIY8UbZ54oB0", C
+        "https://youtu.be/DIuRM7zQCrQ?si=V_Jr4iuNM7jKy7mK", G#
     ],
     "Hamsanaadam": [
         "https://youtu.be/jNacNu-ar0E?si=cm8hFuk8SchY8ugs", G#
         "https://youtu.be/FnSRfFdiDwY?si=vcw09xAdN_bR5sfu", E
+        "https://youtu.be/jhnrib44RLM?si=E2RkwxvA8aWON0gt", D
+        "https://youtu.be/LepNVol4tlQ?si=1vl9MJkHqLBjYewx", C
     ],
     "Varali": [
         "https://youtu.be/Lr02Fe93vcM?si=TZbYfJ2AjdlwXkt8", G#
         "https://youtu.be/3M3-5E6xx2o?si=dhPjeTX6SjoOOnEx", D
+        "https://www.youtube.com/watch?v=-5bgDyMrhrk&t=24s", E
+        "https://youtu.be/5nn9Tds5AoI?si=WdgtFG9R1BKYLeLL", C#
+        "https://youtu.be/WknDE3b7Jjo?si=4RF0omunIdvshK9m", C
     ],
+
     "Sindhubhairavi": [
         "https://youtu.be/wFnshTKK_DI?si=UG-B1b_EkOcMKrxG", E
         "https://youtu.be/x1aLwDLwn_M?si=dV4eTKKXCcLA6ugs", F
         "https://youtu.be/H2Gj1ZY6tP0?si=Ub-uLpKQobtg59_Q", D
+        "https://youtu.be/ciRoR0CF0FI?si=z3x3hO7KVM0YL5GC", D
+        "https://youtu.be/JkOWbg2_G8Q?si=IBhzzE0-dSSev5OE", G
     ],

@@ -1,0 +1,11 @@
+{
+  "processor_type": "AudioPreprocessor",
+  "sample_rate": 16000,
+  "max_length": 320000,
+  "chunk_duration_s": 20,
+  "feature_extractor_type": "MelSpectrogram",
+  "n_fft": 1024,
+  "hop_length": 256,
+  "n_mels": 80,
+  "normalize": true
+}

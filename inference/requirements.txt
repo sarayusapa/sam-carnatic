@@ -1,0 +1,6 @@
+torch
+torchaudio
+safetensors
+librosa
+huggingface_hub
+yt-dlp
